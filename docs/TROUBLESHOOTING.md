@@ -1,0 +1,14 @@
+# Troubleshooting — Kotlin client
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "Server unreachable" / media-server actions fail | Phone and PC are on different networks, or the PC firewall blocks the port | Confirm both are on the same Wi-Fi; `adb shell nc -w 3 <pc-ip> 8000` from the phone; add a firewall rule for the port |
+| `SSLHandshakeException` / cert warning | The server cert does not cover the LAN IP, or the CA is not trusted on the phone | Reissue the leaf with the LAN IP in the SAN list; install the CA as a user certificate (or build with the `src/personal/res` overlay) |
+| AI scan spins for minutes | Album extraction is synchronous and chunked server-side; a local LLM on CPU is slow | Wait it out — the client uses a 15-minute read timeout for LLM calls. Check the server logs for `/api/v1/llm/extract-albums` |
+| AI scan never reaches the server | The phone cannot open the port | See the first two rows; verify with `adb logcat \| grep OkHttpClient` that the POST is sent |
+| Login returns to the app but nothing happens | The OAuth deep link was intercepted by another app | Ensure nothing else registers `com.spotifydashboard.app://callback`; `MainActivity` is the single owner by design |
+| App killed in the background while logging in | Low-RAM device, OS reclaimed the process | The PKCE state is persisted before the browser opens, so re-opening the app completes the flow |
+| Empty library after a sync | The Spotify account has no saved albums, or the sync was cancelled | Open the sync sheet for the stage log; check `Settings → Media server → Sync` |
+| Album page scan returns nothing | The page renders its list lazily | Scroll the page before snapshotting, or use **Scan** to extract the links that are already present |
+| Layout buttons hidden behind the scroll area | Older Compose sizing on small screens | Dialog actions are pinned outside the scroll area; update to the latest build if the action row is still clipped |
+| Spotify / server sign-in and the library are gone after reinstalling | Android deleted `/data/data/com.spotifydashboard.app` and no vault copy was restorable | Before uninstalling, open **Settings → Phone storage** and grant *All files access* (writes `Documents/reSpotIt`), or press *Save now*. The `Android/media` copy needs no permission and is the automatic fallback. |
