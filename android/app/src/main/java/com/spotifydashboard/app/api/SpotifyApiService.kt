@@ -169,6 +169,16 @@ data class PlayOffset(
  */
 data class SaveAlbumsRequest(val ids: List<String>)
 
+/**
+ * Body of `PUT /me/player`: move playback to these devices. Spotify requires a
+ * list even for a single target. `play = true` also starts whatever context was
+ * current, which is what the device picker wants.
+ */
+data class TransferPlaybackRequest(
+    val device_ids: List<String>,
+    val play: Boolean = true,
+)
+
 // --- Service ---
 
 interface SpotifyApiService {
@@ -261,6 +271,17 @@ interface SpotifyApiService {
         @Header("Authorization") authHeader: String,
         @Query("device_id") deviceId: String? = null,
         @Body body: PlayRequest
+    ): Response<Unit>
+
+    /**
+     * Move playback to another Connect device (the device picker). Unlike
+     * [play] this changes the *active* device, so everything afterwards - the
+     * album sheet's "Play album on Spotify" included - lands on the new one.
+     */
+    @PUT("me/player")
+    suspend fun transferPlayback(
+        @Header("Authorization") authHeader: String,
+        @Body body: TransferPlaybackRequest
     ): Response<Unit>
 
     // --- Follow library artists (Spotify Web API) ---

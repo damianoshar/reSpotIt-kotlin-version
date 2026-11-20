@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import coil.compose.SubcomposeAsyncImage
@@ -69,6 +70,7 @@ import com.spotifydashboard.app.data.PlaylistAlbumEntity
 import com.spotifydashboard.app.repository.BackupSettings
 import com.spotifydashboard.app.repository.SyncState
 import com.spotifydashboard.app.api.SpotifyPlaylist
+import com.spotifydashboard.app.api.SpotifyDevice
 import com.spotifydashboard.app.data.LibraryStats
 import com.spotifydashboard.app.data.StatsBucket
 import com.spotifydashboard.app.repository.PlaylistSyncState
@@ -275,6 +277,14 @@ private fun SpotifyDashboardContent(
     // only consumes nothing — it just observes the LazyGrid's pre-scroll delta.
     // Two independent autohide targets: the bottom nav and the board bar
     // (search + sort + view options). Each has its own toggle in Settings.
+    //
+    // Direction, and why the signs look the way they do: the bar must hide while
+    // the list moves towards newer items (the user scrolling *down* the list) and
+    // come back the moment they scroll the other way. On a real device that
+    // gesture accumulates a negative `available.y`, so the *negative* branch
+    // hides. Do not "fix" these thresholds without re-checking on a phone: the
+    // asymmetry (56 to hide, 40 to show) is deliberate hysteresis, and swapping
+    // the two signs is the only thing that inverts the behaviour.
     val navScrollConnection = remember(autohideNav, autohideBoardBar) {
         object : NestedScrollConnection {
             private var navAccumulated = 0f
@@ -282,20 +292,20 @@ private fun SpotifyDashboardContent(
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (autohideNav) {
                     navAccumulated = (navAccumulated + available.y).coerceIn(-160f, 160f)
-                    if (navAccumulated > 56f) {
+                    if (navAccumulated < -56f) {
                         if (navVisible) navVisible = false
                         navAccumulated = 0f
-                    } else if (navAccumulated < -40f) {
+                    } else if (navAccumulated > 40f) {
                         if (!navVisible) navVisible = true
                         navAccumulated = 0f
                     }
                 }
                 if (autohideBoardBar) {
                     barAccumulated = (barAccumulated + available.y).coerceIn(-160f, 160f)
-                    if (barAccumulated > 56f) {
+                    if (barAccumulated < -56f) {
                         if (boardBarVisible) boardBarVisible = false
                         barAccumulated = 0f
-                    } else if (barAccumulated < -40f) {
+                    } else if (barAccumulated > 40f) {
                         if (!boardBarVisible) boardBarVisible = true
                         barAccumulated = 0f
                     }
@@ -1794,13 +1804,6 @@ fun LibraryTab(
                     options = LIBRARY_SORTS,
                     onFilterChange = onFilterChange
                 )
-
-                ViewOptionsRow(
-                    mode = viewMode,
-                    gridSize = gridSize,
-                    onModeChange = onViewModeChange,
-                    onGridSizeChange = onGridSizeChange,
-                )
             }
         }
 
@@ -1869,35 +1872,29 @@ fun LibraryTab(
             )
         }
 
-        // Result count (mirrors TS filtered label)
+        // Result count, view mode, grid density, view-all and select-visible in
+        // one row (they used to be three rows, which is most of the header on a
+        // small screen).
         val activeCount = activeFilterCount(filters)
-        Text(
-            text = "$total album${if (total != 1) "s" else ""}" +
-                (if (activeCount > 0) " (filtered)" else ""),
-            style = MaterialTheme.typography.bodySmall,
-            color = SpotifyLightGray,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-        )
-
-        // View all toggle (load every filtered album)
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("View all", style = MaterialTheme.typography.bodySmall, color = SpotifyLightGray)
-            Spacer(modifier = Modifier.width(8.dp))
-            Switch(
-                checked = viewAll,
-                onCheckedChange = { checked ->
-                    if (checked && total > 200 && !viewAll) {
-                        showViewAllConfirm = true
-                    } else {
-                        onToggleViewAll()
-                    }
+        AlbumBoardControls(
+            total = total,
+            filteredCount = activeCount,
+            mode = viewMode,
+            gridSize = gridSize,
+            onModeChange = onViewModeChange,
+            onGridSizeChange = onGridSizeChange,
+            visibleCount = albums.size,
+            allVisibleSelected = albums.isNotEmpty() && albums.all { selectedAlbums.contains(it.id) },
+            onToggleAllVisible = onToggleAllVisible,
+            viewAll = viewAll,
+            onToggleViewAll = {
+                if (!viewAll && total > 200) {
+                    showViewAllConfirm = true
+                } else {
+                    onToggleViewAll()
                 }
-            )
-        }
+            },
+        )
 
         if (showViewAllConfirm) {
             AlertDialog(
@@ -1936,17 +1933,6 @@ fun LibraryTab(
                 onLocalQueueNext = onLocalQueueNext,
                 onLocalQueueReset = onLocalQueueReset,
             )
-        }
-
-        // Select-all bar (mirrors TS Select all / Deselect all)
-        if (albums.isNotEmpty()) {
-            val allVisibleSelected = albums.all { selectedAlbums.contains(it.id) }
-            TextButton(
-                onClick = onToggleAllVisible,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            ) {
-                Text(if (allVisibleSelected) "Deselect visible (${albums.size})" else "Select all visible (${albums.size})")
-            }
         }
 
         // Give the grid the remaining height and keep the Sync footer pinned:
@@ -2477,13 +2463,6 @@ fun PlaylistAlbumScreen(
                     options = PLAYLIST_SORTS,
                     onFilterChange = onFilterChange
                 )
-
-                ViewOptionsRow(
-                    mode = viewMode,
-                    gridSize = gridSize,
-                    onModeChange = onViewModeChange,
-                    onGridSizeChange = onGridSizeChange,
-                )
             }
         }
 
@@ -2576,24 +2555,17 @@ fun PlaylistAlbumScreen(
         }
 
         val plActiveCount = activeFilterCount(filters)
-        Text(
-            text = "$total album${if (total != 1) "s" else ""}" +
-                (if (plActiveCount > 0) " (filtered)" else ""),
-            style = MaterialTheme.typography.bodySmall,
-            color = SpotifyLightGray,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        AlbumBoardControls(
+            total = total,
+            filteredCount = plActiveCount,
+            mode = viewMode,
+            gridSize = gridSize,
+            onModeChange = onViewModeChange,
+            onGridSizeChange = onGridSizeChange,
+            visibleCount = albums.size,
+            allVisibleSelected = albums.isNotEmpty() && albums.all { selectedAlbums.contains(it.albumId) },
+            onToggleAllVisible = onToggleAllVisible,
         )
-
-        // Select-all bar
-        if (albums.isNotEmpty()) {
-            val allVisibleSelected = albums.all { selectedAlbums.contains(it.albumId) }
-            TextButton(
-                onClick = onToggleAllVisible,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            ) {
-                Text(if (allVisibleSelected) "Deselect visible (${albums.size})" else "Select all visible (${albums.size})")
-            }
-        }
 
         // Album grid
         when {
@@ -4278,19 +4250,41 @@ fun ViewModeToggle(
     }
 }
 
-/** View-mode switch + grid density slider, the row the TS filter bar carries. */
+/**
+ * The album board's control row: result count, view mode, grid density,
+ * "view all" and select-visible in a single line. These used to be three
+ * separate rows - a count row, a view-options row and a select-all row - which
+ * cost too much vertical space (most of the header on a 480x854 screen).
+ *
+ * [onToggleViewAll] stays null for boards without a "view all" toggle (playlists).
+ */
 @Composable
-fun ViewOptionsRow(
+fun AlbumBoardControls(
+    total: Int,
+    filteredCount: Int,
     mode: ViewMode,
     gridSize: Int,
     onModeChange: (ViewMode) -> Unit,
     onGridSizeChange: (Int) -> Unit,
+    visibleCount: Int,
+    allVisibleSelected: Boolean,
+    onToggleAllVisible: () -> Unit,
+    viewAll: Boolean = false,
+    onToggleViewAll: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Text(
+            text = "$total album${if (total != 1) "s" else ""}" +
+                (if (filteredCount > 0) " (filtered)" else ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = SpotifyLightGray,
+            maxLines = 1,
+        )
+        Spacer(modifier = Modifier.width(6.dp))
         ViewModeToggle(mode = mode, onModeChange = onModeChange)
         if (mode == ViewMode.Grid) {
             Slider(
@@ -4298,10 +4292,35 @@ fun ViewOptionsRow(
                 onValueChange = { onGridSizeChange(it.toInt()) },
                 valueRange = 80f..280f,
                 steps = 19,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             )
         } else {
+            // No density control outside grid mode: let the buttons keep their width.
             Spacer(modifier = Modifier.weight(1f))
+        }
+        if (onToggleViewAll != null) {
+            TextButton(
+                onClick = onToggleViewAll,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text(
+                    if (viewAll) "All \u2713" else "View all",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (visibleCount > 0) {
+            TextButton(
+                onClick = onToggleAllVisible,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text(
+                    if (allVisibleSelected) "Deselect $visibleCount" else "Select $visibleCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -5028,11 +5047,19 @@ fun AlbumTrackSheet(
         sheetState = sheetState,
         containerColor = Color(0xFF181818)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        ) {
+        // This content is tall (cover + two action rows + legend + up to 420dp of
+        // tracks) and the sheet is bottom-anchored, so unbounded it pushes the
+        // header above the top edge on a small screen. Bound it to the height the
+        // sheet can actually show and let the track list take the slack.
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val sheetMaxHeight =
+                if (maxHeight == Dp.Infinity) Dp.Unspecified else maxHeight - 24.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = sheetMaxHeight)
+                    .padding(horizontal = 16.dp)
+            ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SubcomposeAsyncImage(
                     model = artworkModel(sheet.imageUrl),
@@ -5246,8 +5273,11 @@ fun AlbumTrackSheet(
                     style = MaterialTheme.typography.bodySmall
                 )
                 else -> LazyColumn(
+                    // weight(fill=false) means the list gives height back to the
+                    // header when the sheet is short; 420dp stays the cap.
                     modifier = Modifier
                         .fillMaxWidth()
+                        .weight(1f, fill = false)
                         .heightIn(max = 420.dp)
                 ) {
                     items(
@@ -5367,6 +5397,90 @@ fun AlbumTrackSheet(
                 }
             }
             Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Spotify Connect device picker for the player. The list comes from
+ * `GET /me/player/devices` and is fetched when the menu opens; tapping an entry
+ * moves playback there (`PUT /me/player`), which also makes it the account's
+ * active device so later album/track hand-offs land on it.
+ */
+@Composable
+private fun DevicePicker(
+    devices: List<SpotifyDevice>,
+    loading: Boolean,
+    error: String?,
+    onOpen: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = {
+                open = true
+                onOpen()
+            }
+        ) {
+            Icon(
+                Icons.Default.List,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Devices", style = MaterialTheme.typography.labelSmall)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (loading) {
+                DropdownMenuItem(
+                    text = { Text("Loading\u2026") },
+                    onClick = {},
+                    enabled = false
+                )
+            }
+            if (error != null) {
+                DropdownMenuItem(
+                    text = { Text(error, color = SpotifyRed) },
+                    onClick = onOpen
+                )
+            }
+            if (!loading && error == null && devices.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("No devices - open Spotify somewhere first") },
+                    onClick = onOpen
+                )
+            }
+            devices.forEach { device ->
+                val id = device.id
+                val label = buildString {
+                    append(device.name.ifBlank { id ?: "Device" })
+                    if (device.type.isNotBlank()) append(" \u00b7 ${device.type.lowercase()}")
+                    if (device.is_active) append(" (active)")
+                    if (device.is_restricted) append(" (restricted)")
+                }
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        open = false
+                        if (id != null) onSelect(id)
+                    },
+                    leadingIcon = {
+                        if (device.is_active) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Refresh devices") },
+                onClick = onOpen
+            )
         }
     }
 }
@@ -5448,14 +5562,30 @@ fun PlayerScreen(viewModel: MainViewModel) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Now playing", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            TextButton(onClick = viewModel::refreshPlayback) { Text("Refresh") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Always visible: choosing a device is most useful when nothing
+                // is playing yet, so this does not live in the track card.
+                DevicePicker(
+                    devices = state.devices,
+                    loading = state.devicesLoading,
+                    error = state.devicesError,
+                    onOpen = viewModel::refreshDevices,
+                    onSelect = viewModel::transferToDevice,
+                )
+                TextButton(onClick = viewModel::refreshPlayback) { Text("Refresh") }
+            }
         }
         Spacer(modifier = Modifier.height(12.dp))
 
         if (state.loading && state.track == null) {
-            Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
+            // Quiet: no spinner here. The card polls every 5 s, so an
+            // animation flashed on every tick when nothing was playing.
+            // A single muted line says the same thing without the movement.
+            Text(
+                "Checking playback…",
+                color = SpotifyLightGray,
+                style = MaterialTheme.typography.bodyMedium
+            )
         } else {
             state.error?.let {
                 Text(it, color = SpotifyRed, style = MaterialTheme.typography.bodySmall)
@@ -6180,8 +6310,21 @@ private fun LocalPlaybackCard(
                 }
 
                 var showSettings by remember { mutableStateOf(false) }
-                TextButton(onClick = { showSettings = !showSettings }) {
-                    Text(if (showSettings) "Hide Connect settings" else "Connect settings")
+                // Both actions on one line: they are the two account-level
+                // actions of this card and each on its own row wasted height.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { showSettings = !showSettings }) {
+                        Text(if (showSettings) "Hide Connect settings" else "Connect settings")
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (state.connected) {
+                        TextButton(onClick = { showForgetConfirm = true }) {
+                            Text("Forget account", color = SpotifyLightGray)
+                        }
+                    }
                 }
                 if (showSettings) {
                     Column {
@@ -6229,17 +6372,6 @@ private fun LocalPlaybackCard(
                               style = MaterialTheme.typography.labelSmall,
                               color = SpotifyLightGray,
                           )
-                    }
-                }
-
-                if (state.connected) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = { showForgetConfirm = true }) {
-                            Text("Forget account", color = SpotifyLightGray)
-                        }
                     }
                 }
             }

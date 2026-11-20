@@ -16,6 +16,7 @@ import com.spotifydashboard.app.api.SpotifyArtistSearchItem
 import com.spotifydashboard.app.api.SpotifyCatalogAlbumResponse
 import com.spotifydashboard.app.api.SavedTracksPage
 import com.spotifydashboard.app.api.SpotifySavedTrack
+import com.spotifydashboard.app.api.TransferPlaybackRequest
 import com.spotifydashboard.app.auth.SpotifyAuthManager
 import com.spotifydashboard.app.data.*
 import com.spotifydashboard.app.data.ViewMode
@@ -412,6 +413,24 @@ class SpotifyRepository(
     }
 
     /**
+     * Move playback to [deviceId]. Unlike [playTrackAsContext] this changes the
+     * account's *active* device, so later hand-offs land there too. Returns
+     * false when Spotify refuses the transfer (e.g. a restricted device).
+     */
+    suspend fun transferPlayback(deviceId: String): Boolean = withContext(Dispatchers.IO) {
+        val token = authManager.getValidAccessToken() ?: return@withContext false
+        val resp = apiService.transferPlayback(
+            "Bearer $token",
+            TransferPlaybackRequest(device_ids = listOf(deviceId), play = true),
+        )
+        if (!resp.isSuccessful) {
+            Log.w("SpotifyRepo", "transferPlayback failed: ${resp.code()}")
+            return@withContext false
+        }
+        true
+    }
+
+    /**
      * Hand playback over to a playlist, continuing at [offset] inside it.
      * This is how "queue to end" works: the playlist holds the current track,
      * the up-next queue and the selected albums, and playback continues at the
@@ -443,19 +462,26 @@ class SpotifyRepository(
     }
 
     /**
-     * Start playback of a single track on the active Spotify device.
-     * Used by the album/playlist track sheet's "Spotify" column.
+     * Start playback of a single track or a Spotify context on the active
+     * Spotify device. Used by the album/playlist track sheet's "Spotify"
+     * column and by "Play album".
+     *
+     * Spotify only accepts an album, artist or playlist as `context_uri`. A
+     * single track has to go in `uris`: sending `spotify:track:...` as a
+     * context is a 400, which made playing one track from a playlist look like
+     * nothing happened.
      */
     suspend fun playTrackAsContext(
         trackUri: String,
         deviceId: String?,
     ) = withContext(Dispatchers.IO) {
         val token = authManager.getValidAccessToken() ?: throw Exception("Authentication required")
-        val resp = apiService.play(
-            "Bearer $token",
-            deviceId,
-            PlayRequest(context_uri = trackUri),
-        )
+        val request = if (trackUri.startsWith("spotify:track:")) {
+            PlayRequest(uris = listOf(trackUri))
+        } else {
+            PlayRequest(context_uri = trackUri)
+        }
+        val resp = apiService.play("Bearer $token", deviceId, request)
         if (!resp.isSuccessful) {
             throw Exception(
                 when (resp.code()) {

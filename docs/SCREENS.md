@@ -21,8 +21,10 @@ All images live in [`screenshots/`](screenshots/).
 The default tab: your saved albums as a grid.
 
 * Search field, then a filter row (artist, title, year, genre, date added).
-* Grid / list / compact-grid switch and a grid-size slider.
-* `6259 albums` counter with a **View all** toggle and **Select all visible**.
+* One control row under the filters: the `6284 albums` counter (with
+  *(filtered)* when filters are on), the grid / list / compact-grid switch, the
+  grid-size slider (grid mode only), **View all** and **Select N** /
+  **Deselect N**. These used to be three separate rows.
 * Header shows the **Sync** button, the filter funnel and the account/logout action.
 * Tapping an album's **Album tracks** button opens the track sheet (screen 3).
 
@@ -32,7 +34,9 @@ The default tab: your saved albums as a grid.
 
 The filter funnel opens a panel with **artist**, **genre**, **release year**
 (from/to plus decade shortcuts) and the same sort keys as the library header.
-Filters apply immediately to the grid.
+Filters apply immediately to the grid. In the playlist album-track sheet, a
+track's Spotify **Play** action starts that single track on the active Spotify
+device; it sends the track URI as a URI list rather than as a playback context.
 
 ## 3. Album track sheet
 
@@ -58,6 +62,9 @@ Bottom sheet for one album: cover, artist, year and track count.
     from playlist).
 * The redundant per-track local **Play** button is removed in the album context
   (the playlist **Pos** button covers that intent for on-device playback).
+* The sheet is bounded to the height it can actually show: on a small screen the
+  header and the action rows stay visible and the track list scrolls within the
+  remaining space, instead of the header being pushed above the top edge.
 * Above the track list a two-card legend explains both action rows.
 
 ## 4. Playlists
@@ -192,7 +199,9 @@ of your existing playlists.
   *Save now*, and *Save to Documents* to grant *All files access* (which also
   keeps a visible copy in `Documents/reSpotIt`). Sign-ins, settings and the
   library are restored automatically after a reinstall.
-* Autohide the bottom navigation / the search & sort bar.
+* Autohide the bottom navigation / the search & sort bar. Both hide while you
+  scroll down the list (towards newer albums) and come back as soon as you
+  scroll up.
 * CSV import and export, hidden (duplicate) albums, playlist retention.
 * Sign out.
 
@@ -203,7 +212,16 @@ of your existing playlists.
 * **Local playback** — the experimental librespot player: full tracks on the
   device (Spotify Premium required, its own authorization, independent of the
   dashboard login).
-* **Now playing** with a refresh and the active Spotify device.
+* **Now playing** with a refresh and the active Spotify device. The card polls
+  every 5 s in the background; that poll is silent — with nothing playing it
+  shows a plain "Checking playback…" line (no spinner) and then the idle
+  message, so nothing flickers while you browse.
+* **Devices** — the Connect device picker in the **Now playing** header, next
+  to **Refresh**. It is always visible (choosing a device matters most when
+  nothing plays yet). It lists what `GET /me/player/devices` reports (the
+  active one is ticked) and moves playback to the entry you tap, so later
+  album/track hand-offs land there too. The list is loaded when you open it
+  and survives the background polls.
 * **Queue playlist** with the local queue and Spotify merge modes.
 
 ---

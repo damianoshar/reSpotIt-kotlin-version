@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import com.spotifydashboard.librespot.LibrespotEngine
@@ -582,7 +584,7 @@ class LocalPlaybackController private constructor(context: Context) {
             )
         }
         playJob = scope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            var ok = withContext(Dispatchers.IO) {
                 if (!playback.load(track.uri)) {
                     false
                 } else {
@@ -590,10 +592,33 @@ class LocalPlaybackController private constructor(context: Context) {
                 }
             }
             if (!ok) {
+                // The Connect session may not be ready on the very first load:
+                // librespot resolves Spotify's hosts before it can be activated,
+                // so a transient DNS blip kills the session and the activation
+                // reports an internal error. Retry once before giving up.
+                delay(400)
+                ok = withContext(Dispatchers.IO) {
+                    if (!playback.load(track.uri)) {
+                        false
+                    } else {
+                        runCatching { playback.play() }.isSuccess
+                    }
+                }
+            }
+            if (!ok) {
+                val message = playback.lastError
                 _state.update {
                     it.copy(
                         isPlaying = false,
-                        error = playback.lastError ?: "Could not play this track.",
+                        error = when {
+                            isTransientActivationError(message) && isOffline() ->
+                                "Local playback needs an internet connection - " +
+                                    "Spotify's servers are unreachable right now."
+                            isTransientActivationError(message) ->
+                                "The Spotify Connect session did not start. Toggle local " +
+                                    "playback off and on, then try again."
+                            else -> message ?: "Could not play this track."
+                        },
                     )
                 }
                 return@launch
@@ -605,6 +630,32 @@ class LocalPlaybackController private constructor(context: Context) {
             _state.update { it.copy(isPlaying = true) }
             startTicker()
         }
+    }
+
+    /**
+     * True for the librespot failures that mean "the Connect session was not
+     * ready yet" rather than "this track cannot play": the native engine reports
+     * them as `Connect activate failed: ... I/O error` variants, and the connect
+     * path already treats the same shape as retryable.
+     */
+    private fun isTransientActivationError(message: String?): Boolean {
+        val text = message?.lowercase() ?: return false
+        return "activate" in text || "internal error" in text || "channel closed" in text
+    }
+
+    /**
+     * Whether the device currently has no usable internet. librespot's Connect
+     * task resolves Spotify's hosts before it can be activated, so with no
+     * network the failure surfaces as the same "Internal error" activation
+     * message: worth telling the user apart from a genuine player fault.
+     */
+    private fun isOffline(): Boolean {
+        val manager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val network = manager.activeNetwork ?: return true
+        val capabilities = manager.getNetworkCapabilities(network) ?: return true
+        return !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+            !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     private fun startTicker() {

@@ -403,6 +403,10 @@ class MainViewModel(
         val progressMs: Int = 0,
         val progressAt: Long = 0L,
         val deviceName: String = "",
+        /** Connect devices behind the player's picker; empty until refreshed. */
+        val devices: List<com.spotifydashboard.app.api.SpotifyDevice> = emptyList(),
+        val devicesLoading: Boolean = false,
+        val devicesError: String? = null,
         val track: com.spotifydashboard.app.api.SpotifyPlaybackTrack? = null,
         val queue: List<com.spotifydashboard.app.api.SpotifyPlaybackTrack> = emptyList(),
         /** "playlist", "album", "artist", "show", ...; empty when unknown. */
@@ -418,6 +422,14 @@ class MainViewModel(
 
     private val _playbackState = MutableStateFlow(PlaybackUiState())
     val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
+
+    /**
+     * True once the first playback poll has finished. Only that first load is
+     * a "loading" state: the 5 s background polls keep the last known state
+     * visible, so the Now playing card never flickers between a spinner and
+     * the idle message.
+     */
+    private var playbackLoadedOnce = false
 
     // --- Experimental on-device playback (librespot) ---
     // Independent from the dashboard's Spotify login: the first play opens the
@@ -1426,6 +1438,51 @@ fun setLocalPlaybackKeepConnected(enabled: Boolean) = localPlayback.setKeepConne
     }
 
     /**
+     * Load the Connect devices for the player's device picker. Kept out of
+     * [refreshPlayback]: listing devices is cheap but only needed when the
+     * picker is opened.
+     */
+    fun refreshDevices() {
+        viewModelScope.launch {
+            _playbackState.update { it.copy(devicesLoading = true, devicesError = null) }
+            try {
+                val devices = spotifyRepository.getDevices()
+                _playbackState.update { it.copy(devices = devices, devicesLoading = false) }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Listing Spotify devices failed", e)
+                _playbackState.update {
+                    it.copy(
+                        devicesLoading = false,
+                        devicesError = e.message ?: "Could not list devices",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Move playback to [deviceId] (Spotify Connect transfer). Refreshes the
+     * device list and the now-playing card so both show the new active device;
+     * album/track hand-offs afterwards land there too, because the transfer
+     * makes it the account's active device.
+     */
+    fun transferToDevice(deviceId: String) {
+        if (deviceId.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val moved = spotifyRepository.transferPlayback(deviceId)
+                _actionMessage.value =
+                    if (moved) "Playback moved" else "Spotify refused the device transfer"
+                if (moved) refreshPlayback()
+                refreshDevices()
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Device transfer failed", e)
+                _actionMessage.value = "Transfer failed: ${e.message}"
+            }
+        }
+    }
+
+    /**
      * Add one track to the local queue playlist. [insertNext] puts it right
      * after the current local position, otherwise it is appended at the end.
      * This is the fallback for the track rows when on-device playback is off.
@@ -1529,7 +1586,16 @@ fun setLocalPlaybackKeepConnected(enabled: Boolean) = localPlayback.setKeepConne
     }
 
     private suspend fun refreshPlaybackNow() {
-        _playbackState.value = _playbackState.value.copy(loading = true, error = null)
+        // Only the very first load is a "loading" state. Background polls run
+        // every 5 s and used to set loading = true each time, which made the
+        // Now playing card flash a spinner on every tick when nothing was
+        // playing. After the first load the last known state stays on screen
+        // until the new one arrives.
+        val firstLoad = !playbackLoadedOnce
+        _playbackState.value = _playbackState.value.copy(
+            loading = firstLoad,
+            error = if (firstLoad) null else _playbackState.value.error,
+        )
         try {
             val current = spotifyRepository.getCurrentPlayback()
             val queue = spotifyRepository.getQueue()
@@ -1592,12 +1658,23 @@ fun setLocalPlaybackKeepConnected(enabled: Boolean) = localPlayback.setKeepConne
                 contextPlaylistId = playlistId,
                 contextEditable = playlistAccess?.editable == true,
                 lastUpdated = System.currentTimeMillis(),
+                // The device list is loaded separately (only when the picker is
+                // opened). It must survive the 5 s polls, otherwise the picker
+                // empties itself right after it filled.
+                devices = _playbackState.value.devices,
+                devicesLoading = _playbackState.value.devicesLoading,
+                devicesError = _playbackState.value.devicesError,
             )
+            playbackLoadedOnce = true
             updateActiveQueuePlaybackStatus(current, queue)
             updateLocalQueuePlaybackStatus(current, queue)
         } catch (e: Exception) {
             Log.e("MainViewModel", "Playback refresh failed", e)
             _playbackState.value = _playbackState.value.copy(loading = false, error = e.message ?: "Playback unavailable")
+            // The first attempt is over either way: a failed first load must
+            // not make every later poll count as "first" again (that would
+            // keep flipping the card back to its loading line).
+            playbackLoadedOnce = true
         }
     }
 
